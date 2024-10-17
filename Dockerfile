@@ -7,7 +7,8 @@ COPY requirements.txt ${LAMBDA_TASK_ROOT}
 RUN pip install -r requirements.txt
 
 # Copy function code
+COPY app ${LAMBDA_TASK_ROOT}/app
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}
 
 # Set the CMD to your handler (could also be done as a parameter override outside of the Dockerfile)
-CMD [ "lambda_function.py " ]
+CMD [ "lambda_function.handler " ]
