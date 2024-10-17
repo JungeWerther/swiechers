@@ -1,15 +1,6 @@
-provider "docker" {}
 
-resource "docker_image" "nginx" {
-  name         = "nginx:latest"
-  keep_locally = false
+module "lambda_example_container-image" {
+  source  = "terraform-aws-modules/lambda/aws//examples/container-image"
+  version = "7.14.0"
 }
 
-resource "docker_container" "nginx" {
-  image = docker_image.nginx.image_id
-  name  = "tutorial"
-  ports {
-    internal = 80
-    external = 8000
-  }
-}
