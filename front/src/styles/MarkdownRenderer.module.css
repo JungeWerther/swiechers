@@ -27,7 +27,7 @@
 }
 
 .__ps_markdown a {
-  @apply text-[7pt] bg-slate-900 inline-block relative bottom-1.5 text-white w-3.5 h-3.5 text-center items-center hover:bg-slate-500 rounded-full;
+  @apply underline hover:bg-white hover:rounded-md p-2;
 }
 
 .__ps_markdown ul,
@@ -41,7 +41,7 @@
 }
 
 .__ps_markdown code {
-  @apply bg-gray-100 text-red-500 px-1 rounded;
+  @apply text-white rounded bg-gray-900;
 }
 
 .__ps_markdown pre {
