@@ -1,5 +1,3 @@
-import { JSX } from "react";
-
 export type Children = {
   children: React.ReactNode;
 };
