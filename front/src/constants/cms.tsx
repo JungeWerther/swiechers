@@ -1,4 +1,3 @@
-import { markdownRender } from "@/functions/render";
 import { CMSContent } from "@/types/basic";
 
 export const content: CMSContent = {

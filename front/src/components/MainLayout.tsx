@@ -1,4 +1,3 @@
-import { ArrowLeftFromLine } from "lucide-react";
 import BackGround from "./Background";
 import BackButton from "./BackButton";
 

@@ -1,6 +1,6 @@
 import MainLayout from "@/components/MainLayout";
 import type { Metadata } from "next";
-import { DM_Mono, DM_Sans, Red_Hat_Display } from "next/font/google";
+import { DM_Mono } from "next/font/google";
 import "./globals.css";
 
 const font = DM_Mono({
