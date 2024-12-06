@@ -16,8 +16,11 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     images: "https://swiechers.nl/og_image.JPG",
     creator: "@creator",
+    title: "Seb Wiechers",
+    description: "Data Wizard, Software Engineer, Entrepreneur",
   },
   openGraph: {
+    siteName: "Seb Wiechers",
     type: "website",
     url: "https://swiechers.nl",
     title: "Seb Wiechers",
