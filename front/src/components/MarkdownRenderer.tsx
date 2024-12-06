@@ -39,7 +39,7 @@ export function CardMapper({ items }: CMSContent) {
 
   return (
     <div className="flex flex-col gap-2 w-full h-full items-center">
-      {items.map(({ title, description, content, link, render }, i) => {
+      {items.map(({ title, description, content, link }, i) => {
         return (
           <Card
             key={title}

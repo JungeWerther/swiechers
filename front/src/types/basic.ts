@@ -10,6 +10,5 @@ export type CMSContent = {
     description?: string;
     content: string;
     link?: string;
-    render?: (content: string) => Promise<JSX.Element>;
   }[];
 };
