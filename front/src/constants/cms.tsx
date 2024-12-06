@@ -64,6 +64,39 @@ export const content: CMSContent = {
 `,
       link: "/projects",
     },
+    {
+      title: "Skills",
+      description: "Languages, frameworks, and tools",
+      content: `## Languages, libraries, frameworks:
+- Python (PyTorch, scipy, pandas, numpy, scikit-learn + can write a library from scratch, pytest)
+- Typescript (React, Next.JS, Node, Three.js, various charting libraries, jest, playwright)
+- CSS + HTML (Tailwind, Bootstrap)
+- SQL (PostgreSQL, MySQL, sqlite, pl/pgSQL, SQL Server)
+- AWS (Lambda, S3, SQS, Bedrock, API Gateway, ...)
+- GCP (BigQuery, Cloud Functions, ...)
+- Azure Graph API
+- Docker (can't live without)
+- Terraform, Github Actions, CI/CD
+- Git, Linux (debian), bash
+- Haskell, Lisp -> OpenCog Hyperon (MeTTa)
+- Ruby, Rails (intermediate, needs brushing up)
+- PHP, Wordpress (intermediate, needs brushing up)
+- Websockets, streaming, audio codecs 
+- BI tools (PowerBI, Metabase)
+- Rust (learning) 
+- ONNX runtime
+- Airbyte, custom ETL pipelines
+
+## Other languages:
+- English (native)
+- Dutch (native)
+- Spanish (fluent) - really: 3y Madrid resident 
+- German (intermediate)
+- French (intermediate)
+
+
+`,
+    },
   ],
   projects: [
     {
