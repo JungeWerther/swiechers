@@ -86,6 +86,7 @@ Developed a [production-grade RAG pipeline](https://pearstop.com) for use with i
 - Github Actions
 - Terraform
 `,
+      link: "https://pearstop.com",
     },
     {
       title: "Data infrastructure for a large event organizer (Azure)",
@@ -103,6 +104,7 @@ Developed a [multi-user web-app for customizing products with natural language](
 - Three.js
 - PostgreSQL
 `,
+      link: "https://youtu.be/8WFgqzNZnsY?feature=shared&t=29",
     },
   ],
   blog: [
@@ -126,7 +128,9 @@ will allow you to to call
 
 which will output \`[(Hello World)]\`. 
 
-# Nothing crazy, right?
+# ...Nothing crazy, right?
+
+---
 But now, define (m) again:
     
     (= (m) (Hello Another World))
@@ -189,7 +193,9 @@ Now check out this code:
     (= (gimme $s) (unwrap ($s)))
     !(gimme e1)
 
-What an elegant way to store and manipulate data!
+What an elegant way to store and manipulate data! 
+
+I love how you can define your own control flow, with minimal boilerplate. 
 `,
     },
   ],

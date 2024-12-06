@@ -37,7 +37,7 @@
 }
 
 .__ps_markdown blockquote {
-  @apply border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-2;
+  @apply border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-2 overflow-scroll;
 }
 
 .__ps_markdown code {
@@ -45,5 +45,16 @@
 }
 
 .__ps_markdown pre {
-  @apply bg-gray-900 text-white p-4 rounded mb-2 overflow-x-auto;
+  @apply bg-gray-900 text-white p-4 rounded mb-2 text-sm;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  position: relative;
+  display: block;
+}
+
+.__ps_markdown pre::before {
+  @apply absolute top-0 right-0 text-xs bg-gray-900 text-white p-1 rounded-bl;
+  display: block;
+  content: "MeTTa";
 }

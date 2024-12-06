@@ -23,13 +23,15 @@ export function CardMapper({ items }: CMSContent) {
           <Card
             key={title}
             className={`border-0 rounded-lg ${
-              link && "cursor-pointer"
-            } hover:bg-white bg-opacity-80 bg-black hover:text-black text-white ${
-              i != 0 ? "hover:bg-opacity-80 text-sm" : "text-xl"
+              link && "cursor-pointer max-w-full overflow-hidden relative "
+            }  bg-black bg-opacity-80 hover:bg-opacity-100 hover:bg-black text-white ${
+              i != 0
+                ? "bg-black text-white hover:bg-white hover:bg-opacity-80 hover:text-black text-sm"
+                : "text-xl"
             }`}
             onClick={() => link && router.push(link)}
           >
-            <div className="flex flex-row justify-between">
+            <div className="flex flex-row justify-between max-w-full overflow-hidden">
               <div>
                 <CardHeader>
                   <CardTitle>{title}</CardTitle>
