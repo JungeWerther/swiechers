@@ -1,4 +1,4 @@
-import { CardMapper } from "@/components/MarkdownRenderer";
+import { CardMapper } from "@/components/CardMapper";
 import { content } from "@/constants/cms";
 
 export default function Page() {
