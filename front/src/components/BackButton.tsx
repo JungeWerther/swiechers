@@ -10,7 +10,7 @@ export default function BackButton() {
   return pathName === "/" ? null : (
     <div
       onClick={() => router.push("/")}
-      className="flex cursor-pointer justify-start fixed bg-black opacity-80 text-white p-4 m-6 rounded-md hover:bg-white hover:text-black "
+      className="flex cursor-pointer justify-start fixed bg-black opacity-80 text-white p-4 m-6 rounded-md hover:bg-white hover:text-black z-20"
     >
       <ArrowLeftFromLine />
     </div>
