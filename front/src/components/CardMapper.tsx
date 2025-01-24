@@ -17,13 +17,13 @@ export function CardMapper({ items }: CMSContent) {
   const router = useRouter();
 
   return (
-    <div className="flex flex-col gap-2 w-full h-full items-center">
+    <div className="flex flex-col gap-2 w-full h-full bg-white bg-opacity-30 p-4 rounded-md items-stretch">
       {items.map(({ title, description, content, link }, i) => {
         return (
           <Card
             key={title}
             className={`border-0 rounded-lg ${
-              link && "cursor-pointer max-w-full overflow-hidden relative "
+              link && "cursor-pointer w-full overflow-hidden relative "
             }  bg-black bg-opacity-80 hover:bg-opacity-100 hover:bg-black text-white ${
               i != 0
                 ? "bg-black text-white hover:bg-white hover:bg-opacity-80 hover:text-black text-sm"
