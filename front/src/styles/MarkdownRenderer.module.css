@@ -1,21 +1,17 @@
-.__ps_markdown {
-  @apply leading-relaxed;
-}
-
 .__ps_markdown h1 {
-  @apply text-3xl font-bold mt-4 mb-3 tracking-tight;
+  @apply text-3xl font-bold mb-2;
 }
 
 .__ps_markdown h2 {
-  @apply text-2xl font-bold mt-4 mb-2 tracking-tight;
+  @apply text-2xl font-bold mb-2;
 }
 
 .__ps_markdown h3 {
-  @apply text-xl font-bold mt-3 mb-2;
+  @apply text-xl font-bold mb-2;
 }
 
 .__ps_markdown h4 {
-  @apply text-lg font-bold mt-3 mb-2;
+  @apply text-lg font-bold mb-2;
 }
 
 .__ps_markdown h5 {
@@ -27,47 +23,29 @@
 }
 
 .__ps_markdown p {
-  @apply mb-3 text-sm leading-7;
-}
-
-.__ps_markdown strong {
-  @apply font-bold;
+  @apply mb-2 text-sm leading-relaxed;
 }
 
 .__ps_markdown a {
-  @apply underline underline-offset-2 decoration-1 hover:bg-white hover:text-black hover:rounded-md px-1 transition-colors;
+  @apply underline hover:bg-white hover:rounded-md p-2;
 }
 
-.__ps_markdown ul {
-  @apply list-disc mb-3 pl-5 text-sm leading-7;
-  margin-top: 0;
-}
-
+.__ps_markdown ul,
 .__ps_markdown ol {
-  @apply list-decimal mb-3 pl-5 text-sm leading-7;
+  @apply list-disc mb-2 pl-5;
   margin-top: 0;
-}
-
-.__ps_markdown li {
-  @apply mb-1;
-}
-
-.__ps_markdown hr {
-  @apply my-5 border-0 border-t border-white/20;
 }
 
 .__ps_markdown blockquote {
-  @apply border-l-4 border-white/30 pl-4 italic text-gray-300 my-3 overflow-x-auto;
+  @apply border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-2 overflow-scroll;
 }
 
-/* Inline code */
 .__ps_markdown code {
-  @apply text-white rounded bg-white/10 px-1.5 py-0.5 text-[0.85em];
+  @apply text-white rounded bg-gray-900;
 }
 
-/* Code blocks */
 .__ps_markdown pre {
-  @apply bg-gray-900 text-white p-4 rounded-md my-3 text-sm;
+  @apply bg-gray-900 text-white p-4 rounded mb-2 text-sm;
   overflow-x: auto;
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -75,18 +53,8 @@
   display: block;
 }
 
-/* Reset inline-code styling when inside a fenced block */
-.__ps_markdown pre code {
-  @apply bg-transparent p-0 text-[0.85rem] leading-6;
-}
-
-/* LaTeX: keep long display equations scrollable on small screens */
-.__ps_markdown :global(.katex-display) {
-  @apply my-4 overflow-x-auto overflow-y-hidden;
-  padding-block: 2px;
-}
-
-/* Slightly larger inline math so it sits well with the body text */
-.__ps_markdown :global(.katex) {
-  font-size: 1.05em;
+.__ps_markdown pre::before {
+  @apply absolute top-0 right-0 text-xs bg-gray-900 text-white p-1 rounded-bl;
+  display: block;
+  content: "MeTTa";
 }
