@@ -18,7 +18,7 @@
     "lucide-react": "^0.468.0",
     "marked": "^15.0.3",
     "marked-katex-extension": "^5.1.10",
-    "next": "15.0.4",
+    "next": "15.0.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "shadcn": "^2.1.6",
