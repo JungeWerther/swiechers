@@ -142,6 +142,36 @@ Developed a [multi-user web-app for customizing products with natural language](
   ],
   blog: [
     {
+      title: "Writing math on the blog",
+      description: "A quick tour of LaTeX rendering in these posts",
+      content: `
+This blog now renders **LaTeX**. You can drop math straight into a post and it gets typeset with [KaTeX](https://katex.org).
+
+Inline math uses single dollar signs, so $e^{i\\pi} + 1 = 0$ sits nicely in a sentence. For something bigger, use double dollar signs to get a centered display equation:
+
+$$
+\\int_{-\\infty}^{\\infty} e^{-x^2}\\, dx = \\sqrt{\\pi}
+$$
+
+Here is a more practical one. When I classify line items with semantic embeddings, I'm really just measuring the cosine similarity between two vectors $\\mathbf{a}$ and $\\mathbf{b}$:
+
+$$
+\\cos(\\theta) = \\frac{\\mathbf{a} \\cdot \\mathbf{b}}{\\lVert \\mathbf{a} \\rVert \\, \\lVert \\mathbf{b} \\rVert}
+= \\frac{\\sum_{i=1}^{n} a_i b_i}{\\sqrt{\\sum_{i=1}^{n} a_i^2} \\, \\sqrt{\\sum_{i=1}^{n} b_i^2}}
+$$
+
+It even handles the heavier notation — matrices, sums, fractions:
+
+$$
+\\operatorname{softmax}(\\mathbf{z})_i = \\frac{e^{z_i}}{\\sum_{j=1}^{K} e^{z_j}}
+\\qquad
+A = \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}
+$$
+
+Markdown still works as usual around it — **bold**, _italics_, lists, code, and links are all unchanged. Math is just one more tool in the box.
+`,
+    },
+    {
       title: "MeTTa language",
       description: "OpenCog Hyperon Neurosymbolic AI framework",
       content: `
