@@ -1,5 +1,6 @@
-// Classifies a single note row with Claude Haiku and writes category + tags back.
-// Invoked asynchronously by a Postgres trigger via pg_net on insert/update.
+// Classifies a single note row with Claude Haiku and writes category, tags +
+// propositions back. Invoked asynchronously by a Postgres trigger via pg_net on
+// insert/update.
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import postgres from 'https://deno.land/x/postgresjs@v3.4.5/mod.js'
 
@@ -16,17 +17,34 @@ const CATEGORIES = [
   'other',
 ] as const
 
+// Surface article of an entity. 'none' covers proper nouns, pronouns, plurals
+// and mass nouns that carry no article. We keep the article because it changes
+// reference / truth-function: 'the-dog' (specific) and 'a-dog' (indefinite) are
+// distinct entities even when the predicate is identical.
+const ARTICLES = ['a', 'an', 'the', 'none'] as const
+
 // Built-in env var: full-access connection string for this project's database.
 const sql = postgres(Deno.env.get('SUPABASE_DB_URL')!)
+
+interface Arg {
+  entity: string
+  article: string
+}
+
+interface Proposition {
+  predicate: string
+  args: Arg[]
+}
 
 interface Classification {
   category: string
   tags: string[]
+  propositions: Proposition[]
 }
 
 async function classify(text: string, apiKey: string): Promise<Classification> {
   // Structured outputs (output_config.format) constrain the response to the
-  // schema, so we always get back valid JSON matching {category, tags}.
+  // schema, so we always get back valid JSON matching {category, tags, propositions}.
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -36,10 +54,27 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
     },
     body: JSON.stringify({
       model: ANTHROPIC_MODEL,
-      max_tokens: 1024,
+      max_tokens: 2048,
       system:
-        'You classify short personal notes. Choose the single best-fitting ' +
-        'category and 1-5 concise lowercase topic tags that describe the note.',
+        'You analyze short personal notes. Do three things:\n' +
+        '1. category: choose the single best-fitting category.\n' +
+        '2. tags: 1-5 concise lowercase topic tags describing the note.\n' +
+        '3. propositions: extract every assertion the note makes - each ' +
+        "statement that could be true or false (a claim, not a question or " +
+        'command). Represent each as a predicate applied to its arguments:\n' +
+        '   - predicate: the asserted property or relation, lowercased to its ' +
+        "base form (e.g. 'is blue' -> blue, 'loves' -> loves, 'is in' -> in).\n" +
+        '   - args: the entities the predicate is about, in order. For each ' +
+        'arg give the entity as a lowercase noun phrase (hyphenate multi-word ' +
+        "entities, e.g. big-dog) and its surface article: 'a', 'an', 'the', or " +
+        "'none'. Use 'none' for proper nouns, pronouns, plurals and mass nouns " +
+        'that carry no article.\n' +
+        '   Preserve the article exactly as used: "the dog is blue" -> ' +
+        'predicate blue, args [{entity:dog, article:the}]; "a dog is blue" -> ' +
+        'predicate blue, args [{entity:dog, article:a}]; "John loves Mary" -> ' +
+        'predicate loves, args [{entity:john, article:none},{entity:mary, ' +
+        'article:none}]. The article matters: the-dog and a-dog are different ' +
+        'entities. If the note makes no assertions, return an empty list.',
       messages: [{ role: 'user', content: text }],
       output_config: {
         format: {
@@ -49,8 +84,31 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
             properties: {
               category: { type: 'string', enum: CATEGORIES },
               tags: { type: 'array', items: { type: 'string' } },
+              propositions: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    predicate: { type: 'string' },
+                    args: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          entity: { type: 'string' },
+                          article: { type: 'string', enum: ARTICLES },
+                        },
+                        required: ['entity', 'article'],
+                        additionalProperties: false,
+                      },
+                    },
+                  },
+                  required: ['predicate', 'args'],
+                  additionalProperties: false,
+                },
+              },
             },
-            required: ['category', 'tags'],
+            required: ['category', 'tags', 'propositions'],
             additionalProperties: false,
           },
         },
@@ -72,7 +130,32 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
   const tags = Array.isArray(parsed.tags)
     ? parsed.tags.map((t) => String(t)).slice(0, 5)
     : []
-  return { category, tags }
+  const propositions = normalizePropositions(parsed.propositions)
+  return { category, tags, propositions }
+}
+
+// Defensively coerce the model's propositions into well-formed objects, dropping
+// anything without a predicate and at least one valid arg.
+function normalizePropositions(raw: unknown): Proposition[] {
+  if (!Array.isArray(raw)) return []
+  const out: Proposition[] = []
+  for (const item of raw) {
+    const predicate = String((item as Proposition)?.predicate ?? '').trim()
+    const rawArgs = (item as Proposition)?.args
+    if (!predicate || !Array.isArray(rawArgs)) continue
+    const args: Arg[] = []
+    for (const a of rawArgs) {
+      const entity = String((a as Arg)?.entity ?? '').trim()
+      if (!entity) continue
+      const article = (ARTICLES as readonly string[]).includes((a as Arg)?.article)
+        ? (a as Arg).article
+        : 'none'
+      args.push({ entity, article })
+    }
+    if (args.length === 0) continue
+    out.push({ predicate, args })
+  }
+  return out
 }
 
 Deno.serve(async (req) => {
@@ -104,7 +187,7 @@ Deno.serve(async (req) => {
 
     // Nothing to classify - clear any stale classification.
     if (text.length === 0) {
-      await sql`update public.notes set category = null, tags = null where id = ${id}`
+      await sql`update public.notes set category = null, tags = null, propositions = null where id = ${id}`
       return new Response(JSON.stringify({ id, classified: false }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -119,15 +202,23 @@ Deno.serve(async (req) => {
       throw new Error('anthropic-key not found in vault')
     }
 
-    const { category, tags } = await classify(text, secret.decrypted_secret as string)
+    const { category, tags, propositions } = await classify(
+      text,
+      secret.decrypted_secret as string,
+    )
     await sql`
-      update public.notes set category = ${category}, tags = ${tags} where id = ${id}
+      update public.notes
+      set category = ${category}, tags = ${tags}, propositions = ${sql.json(propositions)}
+      where id = ${id}
     `
 
-    return new Response(JSON.stringify({ id, classified: true, category, tags }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })
+    return new Response(
+      JSON.stringify({ id, classified: true, category, tags, propositions }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error('classify failed', { id, message })

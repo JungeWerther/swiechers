@@ -23,6 +23,7 @@ managed via the Supabase MCP tools (or the Supabase CLI/dashboard).
 | `created_at` / `updated_at` | `timestamptz` | `updated_at` maintained by `set_updated_at()` trigger |
 | `category` | `text` | **set by the classify pipeline** |
 | `tags` | `text[]` | **set by the classify pipeline** |
+| `propositions` | `jsonb` | **set by the classify pipeline**; extracted assertions as predicate-argument objects |
 | `embedding` | `vector(1024)` | **set by the embed pipeline**; HNSW index `notes_embedding_idx` (cosine) |
 
 RLS is enabled. A real `auth.users` row is required to insert (the FK +
@@ -34,14 +35,26 @@ Both fire from Postgres triggers that call an edge function asynchronously via
 `pg_net` (`net.http_post`). The trigger functions are `SECURITY DEFINER` and read
 `project_url` + `anon_key` from Vault to authenticate the call.
 
-### classify → `category` + `tags`
+### classify → `category` + `tags` + `propositions`
 - Edge function: `classify` (`supabase/functions/classify/index.ts`).
 - Model: **Claude `claude-haiku-4-5`** via the Anthropic Messages API, using
   structured outputs (`output_config.format`, json_schema) to return
-  `{category, tags}` reliably.
+  `{category, tags, propositions}` reliably.
 - `category` is one of: `idea`, `task`, `reference`, `journal`, `meeting`,
   `project`, `personal`, `other` (falls back to `other`). `tags`: 1–5 lowercase
   topic strings.
+- `propositions`: every assertion the note makes (claims that can be true/false;
+  questions and commands are skipped), each as a predicate-argument object:
+  `{"predicate": "<base-form property/relation>", "args": [{"entity": "<lowercase
+  noun phrase, multi-word hyphenated>", "article": "a"|"an"|"the"|"none"}]}`.
+  Stored as `jsonb`. **The article is preserved per arg on purpose** — `the-dog`
+  (definite) and `a-dog` (indefinite) are distinct references with different
+  truth-functions, and `none` covers proper nouns/pronouns/plurals/mass nouns.
+  Relations are n-ary: `"John loves Mary"` → `{predicate: loves, args: [john/none,
+  mary/none]}`. `normalizePropositions()` in the function defensively drops
+  malformed entries. To change the representation, edit the json_schema +
+  system prompt in `classify/index.ts` and redeploy (no DB change unless the
+  column type changes).
 - Anthropic key: Vault secret **`anthropic-key`** (read inside the function via
   `SUPABASE_DB_URL` → `vault.decrypted_secrets`).
 
@@ -57,7 +70,8 @@ Both fire from Postgres triggers that call an edge function asynchronously via
 - `classify_notes_on_insert` / `embed_notes_on_insert`: `AFTER INSERT`.
 - `classify_notes_on_update`: `AFTER UPDATE ... WHEN (title or content changed)`.
 - `embed_notes_on_update`: `AFTER UPDATE OF title, content`.
-- Each function writes **disjoint** columns (`category`/`tags` vs `embedding`),
+- Each function writes **disjoint** columns (`category`/`tags`/`propositions` vs
+  `embedding`),
   and the update triggers only fire on `title`/`content` changes — so a
   function's own write-back never re-triggers either pipeline. **Preserve this
   guarding** if you add or modify triggers, or you'll create an infinite
