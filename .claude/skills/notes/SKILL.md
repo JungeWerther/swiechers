@@ -81,25 +81,39 @@ returning id, updated_at;
 delete from public.notes where id = '<uuid>';
 ```
 
-### Semantic search
+### Ask a question (RAG) — easiest path
 
-Embed the user's query with Voyage (`input_type: "query"`, model
-`voyage-3.5`, 1024 dims) and compare with cosine distance (`<=>`). The
-`notes_embedding_idx` HNSW index uses `vector_cosine_ops`.
+The `ask` edge function does retrieval + answer generation in one call:
+embeds the question with Voyage, finds the most similar notes, and answers
+with Claude (`claude-opus-4-8`) grounded in those notes. Anthropic key is
+read from Vault (`anthropic-key`); Voyage key from the function env.
+
+```
+POST https://bhewgqnzhyllvxcdmjrd.supabase.co/functions/v1/ask
+Authorization: Bearer <anon or user JWT>
+Content-Type: application/json
+
+{ "question": "what did I note about X?" }
+```
+
+Returns `{ "answer": "...", "sources": [{ id, title, similarity }] }`.
+Prefer this for any "what do my notes say about…" request.
+
+### Semantic search (rows only)
+
+Use the `match_notes(query_embedding, match_count)` SQL function — it returns
+the closest notes and respects RLS. The `notes_embedding_idx` HNSW index uses
+cosine ops.
 
 ```sql
 -- :query_embedding is a 1024-dim vector literal, e.g. '[0.01, -0.02, ...]'
-select id, title, left(content, 160) as preview,
-       1 - (embedding <=> :query_embedding) as similarity
-from public.notes
-where embedding is not null
-order by embedding <=> :query_embedding
-limit 5;
+select id, title, left(content, 160) as preview, similarity
+from public.match_notes(:query_embedding, 5);
 ```
 
 To produce `:query_embedding`, call the Voyage API
-(`https://api.voyageai.com/v1/embeddings`) with the query text, or reuse the
-`embed` edge function pattern. Keyword fallback when no embedding is handy:
+(`https://api.voyageai.com/v1/embeddings`) with `input_type: "query"`, model
+`voyage-3.5`. Keyword fallback when no embedding is handy:
 
 ```sql
 select id, title, left(content, 160) as preview
@@ -116,3 +130,6 @@ limit 10;
   unless the user immediately wants semantic search over the new note.
 - If embeddings are persistently `null`, the `VOYAGE_API_KEY` secret on the
   `embed` edge function is probably missing or invalid.
+- The `ask` function needs both `VOYAGE_API_KEY` (function env) and the
+  `anthropic-key` Vault secret. Anthropic has no embeddings API — embeddings
+  are always Voyage; Anthropic is only used for generating the answer.
