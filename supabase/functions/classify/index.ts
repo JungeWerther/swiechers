@@ -1,6 +1,6 @@
-// Classifies a single note row with Claude Haiku and writes category, tags +
-// propositions back. Invoked asynchronously by a Postgres trigger via pg_net on
-// insert/update.
+// Classifies a single note row with Claude Haiku and writes category, tags,
+// propositions + a Curry-Howard judgment back. Invoked asynchronously by a
+// Postgres trigger via pg_net on insert/update.
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import postgres from 'https://deno.land/x/postgresjs@v3.4.5/mod.js'
 
@@ -23,6 +23,13 @@ const CATEGORIES = [
 // distinct entities even when the predicate is identical.
 const ARTICLES = ['a', 'an', 'the', 'none'] as const
 
+// Curry-Howard judgment vocabulary. A note's logical content is a TYPE; `status`
+// is the inhabitation status (the "mood"): proved = the note is the proof term;
+// goal = a questioned type with no witness; hypothetical = supposed in context;
+// refuted = a proof of its negation. Connectives are type formers.
+const KINDS = ['atom', 'arrow', 'prod', 'sum', 'neg'] as const
+const STATUSES = ['proved', 'goal', 'hypothetical', 'refuted'] as const
+
 // Built-in env var: full-access connection string for this project's database.
 const sql = postgres(Deno.env.get('SUPABASE_DB_URL')!)
 
@@ -36,15 +43,34 @@ interface Proposition {
   args: Arg[]
 }
 
+// One node of the type term-graph (SSA form): an atom (predicate + args) or a
+// connective whose `children` are integer indices into the judgment's node list.
+interface Node {
+  kind: string
+  predicate: string
+  args: Arg[]
+  children: number[]
+}
+
+interface Judgment {
+  status: string
+  term: string
+  type: number
+  context: { var: string; type: number }[]
+  nodes: Node[]
+}
+
 interface Classification {
   category: string
   tags: string[]
   propositions: Proposition[]
+  judgment: Judgment | null
 }
 
 async function classify(text: string, apiKey: string): Promise<Classification> {
   // Structured outputs (output_config.format) constrain the response to the
-  // schema, so we always get back valid JSON matching {category, tags, propositions}.
+  // schema, so we always get back valid JSON matching
+  // {category, tags, propositions, judgment}.
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -54,9 +80,9 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
     },
     body: JSON.stringify({
       model: ANTHROPIC_MODEL,
-      max_tokens: 2048,
+      max_tokens: 3072,
       system:
-        'You analyze short personal notes. Do three things:\n' +
+        'You analyze short personal notes. Do four things:\n' +
         '1. category: choose the single best-fitting category.\n' +
         '2. tags: 1-5 concise lowercase topic tags describing the note.\n' +
         '3. propositions: extract every assertion the note makes - each ' +
@@ -74,7 +100,33 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
         'predicate blue, args [{entity:dog, article:a}]; "John loves Mary" -> ' +
         'predicate loves, args [{entity:john, article:none},{entity:mary, ' +
         'article:none}]. The article matters: the-dog and a-dog are different ' +
-        'entities. If the note makes no assertions, return an empty list.',
+        'entities. If the note makes no assertions, return an empty list.\n' +
+        '4. judgment: a Curry-Howard reading of the note as a whole, where the ' +
+        "note's logical content is a TYPE and the note is a proof TERM:\n" +
+        '   - status: the inhabitation status / mood. "proved" = the note ' +
+        'asserts the type is true (the note is its witness; set term to "note"). ' +
+        '"goal" = the note asks/wonders whether the type holds (no witness; set ' +
+        'term to "?"). "hypothetical" = the note supposes it ("if/suppose..."). ' +
+        '"refuted" = the note denies it (set term to "note").\n' +
+        '   - type: the index (into nodes) of the root of the type expression.\n' +
+        '   - nodes: a flat list encoding the type as a graph. Each node is ' +
+        'either an atom or a connective:\n' +
+        '       atom: kind="atom", predicate+args exactly like a proposition ' +
+        'above, children=[].\n' +
+        '       connective: kind is "arrow" (implication P->Q, children=[P,Q]), ' +
+        '"prod" (conjunction P and Q, children=[P,Q,...]), "sum" (disjunction P ' +
+        'or Q, children=[P,Q,...]), or "neg" (negation not P, children=[P]); ' +
+        'predicate="" and args=[] for connectives. children are integer indices ' +
+        'into nodes.\n' +
+        '   - context: hypotheses (each {var, type:<node index>}); usually [], ' +
+        'use it only when the note explicitly assumes something.\n' +
+        '   Examples. "The fridge is empty." -> status proved, term "note", a ' +
+        'single atom node, type pointing at it. "If the fridge is empty, buy ' +
+        'milk." -> nodes [atom(empty,the-fridge), atom(buy,milk), ' +
+        'arrow children [0,1]], type 2, status proved. "Is a conclusion ' +
+        'drawable?" -> one atom, status goal, term "?". Keep the judgment a ' +
+        'faithful single type for the whole note; if the note has no assertible ' +
+        'content, use a single atom and status goal.',
       messages: [{ role: 'user', content: text }],
       output_config: {
         format: {
@@ -107,8 +159,55 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
                   additionalProperties: false,
                 },
               },
+              judgment: {
+                type: 'object',
+                properties: {
+                  status: { type: 'string', enum: STATUSES },
+                  term: { type: 'string' },
+                  type: { type: 'integer' },
+                  context: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        var: { type: 'string' },
+                        type: { type: 'integer' },
+                      },
+                      required: ['var', 'type'],
+                      additionalProperties: false,
+                    },
+                  },
+                  nodes: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        kind: { type: 'string', enum: KINDS },
+                        predicate: { type: 'string' },
+                        args: {
+                          type: 'array',
+                          items: {
+                            type: 'object',
+                            properties: {
+                              entity: { type: 'string' },
+                              article: { type: 'string', enum: ARTICLES },
+                            },
+                            required: ['entity', 'article'],
+                            additionalProperties: false,
+                          },
+                        },
+                        children: { type: 'array', items: { type: 'integer' } },
+                      },
+                      required: ['kind', 'predicate', 'args', 'children'],
+                      additionalProperties: false,
+                    },
+                  },
+                },
+                required: ['status', 'term', 'type', 'context', 'nodes'],
+                additionalProperties: false,
+              },
             },
-            required: ['category', 'tags', 'propositions'],
+            required: ['category', 'tags', 'propositions', 'judgment'],
             additionalProperties: false,
           },
         },
@@ -131,7 +230,62 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
     ? parsed.tags.map((t) => String(t)).slice(0, 5)
     : []
   const propositions = normalizePropositions(parsed.propositions)
-  return { category, tags, propositions }
+  const judgment = normalizeJudgment(parsed.judgment)
+  return { category, tags, propositions, judgment }
+}
+
+function normalizeArg(raw: unknown): Arg | null {
+  const entity = String((raw as Arg)?.entity ?? '').trim()
+  if (!entity) return null
+  const article = (ARTICLES as readonly string[]).includes((raw as Arg)?.article)
+    ? (raw as Arg).article
+    : 'none'
+  return { entity, article }
+}
+
+// Validate the term-graph judgment: well-formed nodes, an in-range root, and
+// child/context indices that actually point at nodes. Return null on anything
+// malformed so we simply store no judgment rather than a broken one.
+function normalizeJudgment(raw: unknown): Judgment | null {
+  if (!raw || typeof raw !== 'object') return null
+  const j = raw as Judgment
+  if (!Array.isArray(j.nodes) || j.nodes.length === 0) return null
+
+  const nodes: Node[] = []
+  for (const n of j.nodes) {
+    const kind = (KINDS as readonly string[]).includes((n as Node)?.kind)
+      ? (n as Node).kind
+      : 'atom'
+    const predicate = String((n as Node)?.predicate ?? '').trim()
+    const args = Array.isArray((n as Node)?.args)
+      ? ((n as Node).args.map(normalizeArg).filter(Boolean) as Arg[])
+      : []
+    const children = Array.isArray((n as Node)?.children)
+      ? (n as Node).children
+          .map((c) => Number(c))
+          .filter((c) => Number.isInteger(c))
+      : []
+    nodes.push({ kind, predicate, args, children })
+  }
+  const inRange = (i: number) => Number.isInteger(i) && i >= 0 && i < nodes.length
+  // Every child reference must resolve to a real node.
+  for (const n of nodes) {
+    if (!n.children.every(inRange)) return null
+  }
+  const type = Number(j.type)
+  if (!inRange(type)) return null
+
+  const status = (STATUSES as readonly string[]).includes(j.status)
+    ? j.status
+    : 'proved'
+  const term = String(j.term ?? '').trim() || (status === 'goal' ? '?' : 'note')
+  const context = Array.isArray(j.context)
+    ? j.context
+        .map((h) => ({ var: String(h?.var ?? '').trim(), type: Number(h?.type) }))
+        .filter((h) => h.var && inRange(h.type))
+    : []
+
+  return { status, term, type, context, nodes }
 }
 
 // Defensively coerce the model's propositions into well-formed objects, dropping
@@ -143,15 +297,7 @@ function normalizePropositions(raw: unknown): Proposition[] {
     const predicate = String((item as Proposition)?.predicate ?? '').trim()
     const rawArgs = (item as Proposition)?.args
     if (!predicate || !Array.isArray(rawArgs)) continue
-    const args: Arg[] = []
-    for (const a of rawArgs) {
-      const entity = String((a as Arg)?.entity ?? '').trim()
-      if (!entity) continue
-      const article = (ARTICLES as readonly string[]).includes((a as Arg)?.article)
-        ? (a as Arg).article
-        : 'none'
-      args.push({ entity, article })
-    }
+    const args = rawArgs.map(normalizeArg).filter(Boolean) as Arg[]
     if (args.length === 0) continue
     out.push({ predicate, args })
   }
@@ -187,7 +333,7 @@ Deno.serve(async (req) => {
 
     // Nothing to classify - clear any stale classification.
     if (text.length === 0) {
-      await sql`update public.notes set category = null, tags = null, propositions = null where id = ${id}`
+      await sql`update public.notes set category = null, tags = null, propositions = null, judgment = null where id = ${id}`
       return new Response(JSON.stringify({ id, classified: false }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -202,18 +348,19 @@ Deno.serve(async (req) => {
       throw new Error('anthropic-key not found in vault')
     }
 
-    const { category, tags, propositions } = await classify(
+    const { category, tags, propositions, judgment } = await classify(
       text,
       secret.decrypted_secret as string,
     )
     await sql`
       update public.notes
-      set category = ${category}, tags = ${tags}, propositions = ${sql.json(propositions)}
+      set category = ${category}, tags = ${tags},
+          propositions = ${sql.json(propositions)}, judgment = ${judgment ? sql.json(judgment) : null}
       where id = ${id}
     `
 
     return new Response(
-      JSON.stringify({ id, classified: true, category, tags, propositions }),
+      JSON.stringify({ id, classified: true, category, tags, propositions, judgment }),
       {
         status: 200,
         headers: { 'content-type': 'application/json' },

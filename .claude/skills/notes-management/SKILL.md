@@ -25,6 +25,8 @@ managed via the Supabase MCP tools (or the Supabase CLI/dashboard).
 | `tags` | `text[]` | **set by the classify pipeline** |
 | `propositions` | `jsonb` | **set by the classify pipeline**; extracted assertions as predicate-argument objects |
 | `propositions_sexpr` | `text[]` | **generated** (STORED) from `propositions` via `render_sexprs()`; Lisp s-expression form, read-only |
+| `judgment` | `jsonb` | **set by the classify pipeline**; Curry-Howard typed judgment (propositions-as-types, note-as-proof) |
+| `judgment_sexpr` | `text` | **generated** (STORED) from `judgment` via `render_judgment()`; Lisp s-expression form, read-only |
 | `embedding` | `vector(1024)` | **set by the embed pipeline**; HNSW index `notes_embedding_idx` (cosine) |
 
 RLS is enabled. A real `auth.users` row is required to insert (the FK +
@@ -36,11 +38,11 @@ Both fire from Postgres triggers that call an edge function asynchronously via
 `pg_net` (`net.http_post`). The trigger functions are `SECURITY DEFINER` and read
 `project_url` + `anon_key` from Vault to authenticate the call.
 
-### classify → `category` + `tags` + `propositions`
+### classify → `category` + `tags` + `propositions` + `judgment`
 - Edge function: `classify` (`supabase/functions/classify/index.ts`).
 - Model: **Claude `claude-haiku-4-5`** via the Anthropic Messages API, using
   structured outputs (`output_config.format`, json_schema) to return
-  `{category, tags, propositions}` reliably.
+  `{category, tags, propositions, judgment}` reliably.
 - `category` is one of: `idea`, `task`, `reference`, `journal`, `meeting`,
   `project`, `personal`, `other` (falls back to `other`). `tags`: 1–5 lowercase
   topic strings.
@@ -63,6 +65,20 @@ Both fire from Postgres triggers that call an edge function asynchronously via
   dropped for `none`. It is read-only and always in sync (Postgres recomputes it
   whenever `propositions` changes); no model is involved. Edit `render_sexprs`
   (see `migrations/…_notes_propositions_sexpr.sql`) to change the surface syntax.
+- `judgment` is the **Curry-Howard** layer: one typed judgment per note —
+  propositions-as-types with the note as proof term. `status` is the
+  inhabitation/mood (`proved` = note is the witness, `goal` = questioned/no
+  witness, `hypothetical` = supposed, `refuted` = proof of the negation); the
+  type is a **flat node list (SSA form)** because structured outputs can't
+  express recursive json_schema — each node is an `atom` (predicate+args) or a
+  connective (`arrow` `→`, `prod` `∧`, `sum` `∨`, `neg` `¬`) whose `children` are
+  integer indices into `nodes`. Code validates indices and drops the whole
+  judgment (→ null) if malformed. `judgment_sexpr` is the **generated** Lisp
+  projection via `public.render_judgment(jsonb)` (which recurses through
+  `render_node(nodes, idx, depth)`), e.g.
+  `(proved note (-> (empty the-fridge) (buy milk)))`. Both renderers are
+  `IMMUTABLE` and total (null on malformed) so they can safely back generated
+  columns. See `migrations/…_notes_curry_howard_judgment.sql`.
 - Anthropic key: Vault secret **`anthropic-key`** (read inside the function via
   `SUPABASE_DB_URL` → `vault.decrypted_secrets`).
 
@@ -78,8 +94,8 @@ Both fire from Postgres triggers that call an edge function asynchronously via
 - `classify_notes_on_insert` / `embed_notes_on_insert`: `AFTER INSERT`.
 - `classify_notes_on_update`: `AFTER UPDATE ... WHEN (title or content changed)`.
 - `embed_notes_on_update`: `AFTER UPDATE OF title, content`.
-- Each function writes **disjoint** columns (`category`/`tags`/`propositions` vs
-  `embedding`),
+- Each function writes **disjoint** columns
+  (`category`/`tags`/`propositions`/`judgment` vs `embedding`),
   and the update triggers only fire on `title`/`content` changes — so a
   function's own write-back never re-triggers either pipeline. **Preserve this
   guarding** if you add or modify triggers, or you'll create an infinite
