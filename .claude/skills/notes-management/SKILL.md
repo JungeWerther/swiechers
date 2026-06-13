@@ -24,6 +24,7 @@ managed via the Supabase MCP tools (or the Supabase CLI/dashboard).
 | `category` | `text` | **set by the classify pipeline** |
 | `tags` | `text[]` | **set by the classify pipeline** |
 | `propositions` | `jsonb` | **set by the classify pipeline**; extracted assertions as predicate-argument objects |
+| `propositions_sexpr` | `text[]` | **generated** (STORED) from `propositions` via `render_sexprs()`; Lisp s-expression form, read-only |
 | `embedding` | `vector(1024)` | **set by the embed pipeline**; HNSW index `notes_embedding_idx` (cosine) |
 
 RLS is enabled. A real `auth.users` row is required to insert (the FK +
@@ -55,6 +56,13 @@ Both fire from Postgres triggers that call an edge function asynchronously via
   malformed entries. To change the representation, edit the json_schema +
   system prompt in `classify/index.ts` and redeploy (no DB change unless the
   column type changes).
+- `propositions_sexpr` is a **generated** `text[]` column: a pure Lisp-style
+  projection of `propositions` via the `IMMUTABLE` SQL function
+  `public.render_sexprs(jsonb)` — each proposition becomes `(predicate arg ...)`
+  with the article folded into the entity token (`the-fridge`, `a-dog`) or
+  dropped for `none`. It is read-only and always in sync (Postgres recomputes it
+  whenever `propositions` changes); no model is involved. Edit `render_sexprs`
+  (see `migrations/…_notes_propositions_sexpr.sql`) to change the surface syntax.
 - Anthropic key: Vault secret **`anthropic-key`** (read inside the function via
   `SUPABASE_DB_URL` → `vault.decrypted_secrets`).
 
