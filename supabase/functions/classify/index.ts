@@ -1,11 +1,16 @@
-// Classifies a single note row with Claude Haiku and writes category, tags,
-// propositions + a Curry-Howard judgment back. Invoked asynchronously by a
+// Classifies a single note row with a DigitalOcean chat model and writes category,
+// tags, propositions + a Curry-Howard judgment back. Invoked asynchronously by a
 // Postgres trigger via pg_net on insert/update.
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import postgres from 'https://deno.land/x/postgresjs@v3.4.5/mod.js'
 
-// Cheap, fast model for short-text classification.
-const ANTHROPIC_MODEL = 'claude-haiku-4-5'
+// DigitalOcean Gradient serverless inference (OpenAI-compatible chat completions),
+// same endpoint family + Vault key as the embed function. Use a fast NON-reasoning
+// instruct model: this runs on every note write and the trigger's pg_net call
+// times out at 30s, so reasoning models like glm-5 (~2min) are unusable here.
+// To swap models, change CHAT_MODEL (GET /v1/models lists the slugs).
+const CHAT_MODEL = 'llama3.3-70b-instruct'
+const DO_CHAT_URL = 'https://inference.do-ai.run/v1/chat/completions'
 const CATEGORIES = [
   'idea',
   'task',
@@ -68,20 +73,24 @@ interface Classification {
 }
 
 async function classify(text: string, apiKey: string): Promise<Classification> {
-  // Structured outputs (output_config.format) constrain the response to the
-  // schema, so we always get back valid JSON matching
-  // {category, tags, propositions, judgment}.
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  // DigitalOcean is OpenAI-compatible; we ask for a JSON object and parse it.
+  // There's no server-side schema enforcement here, so the prompt spells out the
+  // exact shape and the normalize*() helpers below defensively coerce the result.
+  const res = await fetch(DO_CHAT_URL, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 3072,
-      system:
+      model: CHAT_MODEL,
+      max_tokens: 4096,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
         'You analyze short personal notes. Do four things:\n' +
         '1. category: choose the single best-fitting category.\n' +
         '2. tags: 1-5 concise lowercase topic tags describing the note.\n' +
@@ -126,103 +135,33 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
         'arrow children [0,1]], type 2, status proved. "Is a conclusion ' +
         'drawable?" -> one atom, status goal, term "?". Keep the judgment a ' +
         'faithful single type for the whole note; if the note has no assertible ' +
-        'content, use a single atom and status goal.',
-      messages: [{ role: 'user', content: text }],
-      output_config: {
-        format: {
-          type: 'json_schema',
-          schema: {
-            type: 'object',
-            properties: {
-              category: { type: 'string', enum: CATEGORIES },
-              tags: { type: 'array', items: { type: 'string' } },
-              propositions: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    predicate: { type: 'string' },
-                    args: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          entity: { type: 'string' },
-                          article: { type: 'string', enum: ARTICLES },
-                        },
-                        required: ['entity', 'article'],
-                        additionalProperties: false,
-                      },
-                    },
-                  },
-                  required: ['predicate', 'args'],
-                  additionalProperties: false,
-                },
-              },
-              judgment: {
-                type: 'object',
-                properties: {
-                  status: { type: 'string', enum: STATUSES },
-                  term: { type: 'string' },
-                  type: { type: 'integer' },
-                  context: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        var: { type: 'string' },
-                        type: { type: 'integer' },
-                      },
-                      required: ['var', 'type'],
-                      additionalProperties: false,
-                    },
-                  },
-                  nodes: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        kind: { type: 'string', enum: KINDS },
-                        predicate: { type: 'string' },
-                        args: {
-                          type: 'array',
-                          items: {
-                            type: 'object',
-                            properties: {
-                              entity: { type: 'string' },
-                              article: { type: 'string', enum: ARTICLES },
-                            },
-                            required: ['entity', 'article'],
-                            additionalProperties: false,
-                          },
-                        },
-                        children: { type: 'array', items: { type: 'integer' } },
-                      },
-                      required: ['kind', 'predicate', 'args', 'children'],
-                      additionalProperties: false,
-                    },
-                  },
-                },
-                required: ['status', 'term', 'type', 'context', 'nodes'],
-                additionalProperties: false,
-              },
-            },
-            required: ['category', 'tags', 'propositions', 'judgment'],
-            additionalProperties: false,
-          },
+        'content, use a single atom and status goal.\n\n' +
+        'Respond with ONLY a single JSON object - no markdown, no code fences, ' +
+        'no prose - with exactly these keys:\n' +
+        '  category: one of ' + CATEGORIES.join(', ') + '\n' +
+        '  tags: array of 1-5 lowercase strings\n' +
+        '  propositions: array of {"predicate": string, "args": [{"entity": ' +
+        'string, "article": one of ' + ARTICLES.join('/') + '}]}\n' +
+        '  judgment: {"status": one of ' + STATUSES.join('/') + ', "term": ' +
+        'string, "type": integer (root node index), "context": [{"var": string, ' +
+        '"type": integer}], "nodes": [{"kind": one of ' + KINDS.join('/') + ', ' +
+        '"predicate": string, "args": [{"entity": string, "article": ...}], ' +
+        '"children": [integer]}]}\n' +
+        'Use [] for empty arrays.',
         },
-      },
+        { role: 'user', content: text },
+      ],
     }),
   })
   if (!res.ok) {
-    throw new Error(`anthropic api error ${res.status}: ${await res.text()}`)
+    throw new Error(`digitalocean inference error ${res.status}: ${await res.text()}`)
   }
   const json = await res.json()
-  const block = json?.content?.find((b: { type: string }) => b.type === 'text')
-  if (!block?.text) {
-    throw new Error('anthropic api returned no text content')
+  const content = json?.choices?.[0]?.message?.content
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    throw new Error('digitalocean inference returned no content')
   }
-  const parsed = JSON.parse(block.text) as Classification
+  const parsed = JSON.parse(stripJsonFences(content)) as Classification
   const category = (CATEGORIES as readonly string[]).includes(parsed.category)
     ? parsed.category
     : 'other'
@@ -232,6 +171,13 @@ async function classify(text: string, apiKey: string): Promise<Classification> {
   const propositions = normalizePropositions(parsed.propositions)
   const judgment = normalizeJudgment(parsed.judgment)
   return { category, tags, propositions, judgment }
+}
+
+// Chat models sometimes wrap JSON in ```json fences despite instructions.
+function stripJsonFences(s: string): string {
+  const t = s.trim()
+  const fenced = t.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  return (fenced ? fenced[1] : t).trim()
 }
 
 function normalizeArg(raw: unknown): Arg | null {
@@ -340,12 +286,12 @@ Deno.serve(async (req) => {
       })
     }
 
-    // The Anthropic key lives in Supabase Vault (added via the dashboard).
+    // The DigitalOcean inference key lives in Supabase Vault (shared with embed).
     const [secret] = await sql`
-      select decrypted_secret from vault.decrypted_secrets where name = 'anthropic-key'
+      select decrypted_secret from vault.decrypted_secrets where name = 'digitalocean-inference-model-key'
     `
     if (!secret?.decrypted_secret) {
-      throw new Error('anthropic-key not found in vault')
+      throw new Error('digitalocean-inference-model-key not found in vault')
     }
 
     const { category, tags, propositions, judgment } = await classify(

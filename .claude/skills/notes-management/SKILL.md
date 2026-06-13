@@ -40,9 +40,18 @@ Both fire from Postgres triggers that call an edge function asynchronously via
 
 ### classify → `category` + `tags` + `propositions` + `judgment`
 - Edge function: `classify` (`supabase/functions/classify/index.ts`).
-- Model: **Claude `claude-haiku-4-5`** via the Anthropic Messages API, using
-  structured outputs (`output_config.format`, json_schema) to return
-  `{category, tags, propositions, judgment}` reliably.
+- Model: **DigitalOcean `llama3.3-70b-instruct`** via Gradient serverless
+  inference (OpenAI-compatible `POST https://inference.do-ai.run/v1/chat/completions`),
+  using JSON mode (`response_format: {type: "json_object"}`) to return
+  `{category, tags, propositions, judgment}`. There is **no** server-side schema
+  enforcement, so the system prompt spells out the exact shape and the
+  `normalize*()` helpers defensively coerce the result (`stripJsonFences` handles
+  models that wrap output in code fences). Set via `CHAT_MODEL` in
+  `classify/index.ts` — **use a non-reasoning instruct model**: reasoning models
+  like `glm-5` take ~2 min and blow the trigger's pg_net timeout. Even
+  `llama3.3-70b-instruct` can run >30s, so the classify trigger's
+  `timeout_milliseconds` was raised to 60000 (the function still completes and
+  writes back even if pg_net stops waiting).
 - `category` is one of: `idea`, `task`, `reference`, `journal`, `meeting`,
   `project`, `personal`, `other` (falls back to `other`). `tags`: 1–5 lowercase
   topic strings.
@@ -55,8 +64,8 @@ Both fire from Postgres triggers that call an edge function asynchronously via
   truth-functions, and `none` covers proper nouns/pronouns/plurals/mass nouns.
   Relations are n-ary: `"John loves Mary"` → `{predicate: loves, args: [john/none,
   mary/none]}`. `normalizePropositions()` in the function defensively drops
-  malformed entries. To change the representation, edit the json_schema +
-  system prompt in `classify/index.ts` and redeploy (no DB change unless the
+  malformed entries. To change the representation, edit the system prompt's
+  shape spec in `classify/index.ts` and redeploy (no DB change unless the
   column type changes).
 - `propositions_sexpr` is a **generated** `text[]` column: a pure Lisp-style
   projection of `propositions` via the `IMMUTABLE` SQL function
@@ -79,8 +88,10 @@ Both fire from Postgres triggers that call an edge function asynchronously via
   `(proved note (-> (empty the-fridge) (buy milk)))`. Both renderers are
   `IMMUTABLE` and total (null on malformed) so they can safely back generated
   columns. See `migrations/…_notes_curry_howard_judgment.sql`.
-- Anthropic key: Vault secret **`anthropic-key`** (read inside the function via
-  `SUPABASE_DB_URL` → `vault.decrypted_secrets`).
+- DigitalOcean key: Vault secret **`digitalocean-inference-model-key`** — the
+  **same** secret the embed function uses (read inside the function via
+  `SUPABASE_DB_URL` → `vault.decrypted_secrets`). Classify no longer uses
+  Anthropic.
 
 ### embed → `embedding`
 - Edge function: `embed` (`supabase/functions/embed/index.ts`).
@@ -121,8 +132,7 @@ produces meaningless similarity scores.
 |---|---|
 | `project_url` | trigger functions (build the edge-function URL) |
 | `anon_key` | trigger functions (auth the pg_net call) |
-| `anthropic-key` | `classify` function |
-| `digitalocean-inference-model-key` | `embed` function |
+| `digitalocean-inference-model-key` | **both** `classify` (chat) and `embed` (embeddings) |
 
 Keys live in Vault (not as edge-function env secrets) so both functions read
 them the same way: `select decrypted_secret from vault.decrypted_secrets where name = '...'`.
@@ -132,8 +142,13 @@ them the same way: `select decrypted_secret from vault.decrypted_secrets where n
 - **Deploy an edge function:** Supabase MCP `deploy_edge_function` (keep
   `verify_jwt: true` — the triggers pass the anon JWT), or `supabase functions
   deploy`. Mirror the change back into `supabase/functions/<name>/index.ts`.
-- **Change the classify categories:** edit the `CATEGORIES` array and the
-  json_schema enum in `classify/index.ts`, redeploy. No DB change needed.
+- **Change the classify categories:** edit the `CATEGORIES` array in
+  `classify/index.ts` (it's interpolated into the system prompt), redeploy. No DB
+  change needed.
+- **Change the classify model:** edit `CHAT_MODEL` in `classify/index.ts` to any
+  DO chat slug (`GET https://inference.do-ai.run/v1/models` lists them), redeploy.
+  Keep it a **non-reasoning** instruct model so it finishes well within the
+  trigger timeout.
 - **Change the embedding model:** if the new model's dimensionality ≠ 1024, you
   must `alter` the `embedding` column to the new `vector(N)`, recreate
   `notes_embedding_idx`, **re-embed all existing rows**, and use the same model
