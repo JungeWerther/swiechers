@@ -140,12 +140,22 @@ functions run the **inverse and the reasoning** over it (see
   prose, hand the structure to the DO chat model instead.
 - `note_atoms` (view) — one row per `(note, proposition)` with `predicate` +
   `entities[]`. The substrate for reasoning: entity joins (aggregate all atoms
-  whose `entities` include `myself`/`i` → a self-model), goal discharge (for a
-  goal relating X and Y, search atoms bridging X→Y across notes), tension
+  whose `entities` include `myself`/`i` → a self-model), goal discharge, tension
   detection (conflicting predicates on the same entity).
+- `discharge_goal(note_id uuid)` — the **prover**. For a note whose judgment is a
+  `goal`, returns `(goal, verdict, evidence[], reconstructed)`. A relational goal
+  `R(X,Y)` is *discharged* if a note links X and Y (that note's atoms are the
+  evidence chain, and `reconstructed` is the proved-form sentence); a unary goal
+  `P(X)` stays *open* (one endpoint, nothing to bridge) with any corroborating
+  atoms. Deliberately honest — it never fabricates a proof.
+- **`verbalize` edge function** (`supabase/functions/verbalize/index.ts`) — the
+  *fluent* counterpart to the deterministic `verbalize_*` SQL: `POST {sexpr,
+  gloss?}` → `{sentence}`, rendered by the DO chat model with the mood preserved
+  (`goal` → a question, `proved` → a statement). Use it when a program produced a
+  structure and you want natural prose, not the crude SQL gloss.
 
-Full loop: `text → [classify] → propositions/judgment → [reasoning over note_atoms]
-→ new structure → [verbalize_*] → text`.
+Full loop: `text → [classify] → propositions/judgment → [discharge_goal / reasoning
+over note_atoms] → new structure → [verbalize_* or the verbalize fn] → text`.
 
 ## Vault secrets used
 
