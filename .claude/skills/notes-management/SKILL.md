@@ -126,6 +126,27 @@ similarity (`1 - (embedding <=> query)`), skipping rows with no embedding.
 model first, then pass the vector to `match_notes`. Mixing embedding models
 produces meaningless similarity scores.
 
+## Reconstruction & reasoning
+
+The classify pipeline runs text → structure (propositions / judgment); these
+functions run the **inverse and the reasoning** over it (see
+`migrations/…_notes_reconstruct_and_reason.sql`):
+
+- `verbalize_phrase(jsonb)` / `verbalize_node(nodes, idx)` / `verbalize_judgment(jsonb)`
+  / `verbalize_proposition(jsonb)` — deterministic **structure → English**
+  reconstruction (the inverse grammar of extraction). `verbalize_judgment` reads
+  the mood off `status`: `proved` → a statement, `goal` → a question, `refuted`
+  → a denial, `hypothetical` → a supposition. Crude but model-free; for fluent
+  prose, hand the structure to the DO chat model instead.
+- `note_atoms` (view) — one row per `(note, proposition)` with `predicate` +
+  `entities[]`. The substrate for reasoning: entity joins (aggregate all atoms
+  whose `entities` include `myself`/`i` → a self-model), goal discharge (for a
+  goal relating X and Y, search atoms bridging X→Y across notes), tension
+  detection (conflicting predicates on the same entity).
+
+Full loop: `text → [classify] → propositions/judgment → [reasoning over note_atoms]
+→ new structure → [verbalize_*] → text`.
+
 ## Vault secrets used
 
 | Secret | Used by |
