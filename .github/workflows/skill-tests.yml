@@ -1,0 +1,24 @@
+name: Skill tests
+
+# Runs the skill documentation tests (e.g. the notes-management SKILL.md parser)
+# on every push and pull request. These use Node's built-in test runner, so no
+# dependency install is needed.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run skill doc tests
+        run: |
+          files=$(find .claude/skills -name '*.test.mjs')
+          if [ -z "$files" ]; then
+            echo "No skill tests found"; exit 0
+          fi
+          node --test $files
