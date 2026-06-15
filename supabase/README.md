@@ -42,10 +42,10 @@ Vault (secret name `digitalocean-inference-model-key`).
 `.github/workflows/markdown-to-supabase.yml` watches pushes to `main`. When a
 markdown file is **added or changed**, the workflow runs the Claude Code GitHub
 Action and asks Claude to hand each file to the `ingest_markdown_note` function
-(via the Supabase MCP server) — one call per file, `source_path` = file path,
-`content` = file body. Each new version is a plain insert, so the classify and
-embed triggers above fire and the version is categorised + embedded
-automatically. Deletions are ignored.
+over `psql` — one call per file, `source_path` = file path, `content` = file
+body (bound with psql's `:'var'` so the markdown needs no escaping). Each new
+version is a plain insert, so the classify and embed triggers above fire and the
+version is categorised + embedded automatically. Deletions are ignored.
 
 ### Versioning (`ingest_markdown_note`)
 
@@ -66,15 +66,38 @@ and identical re-pushes are idempotent (also backed by unique indexes on
 a plain `sha256sum` of the file, so it's portable and salt-free. View
 `notes_current` exposes the latest version per file.
 
+### Least-privilege CI credential (`ci_user`)
+
+CI does **not** use a Supabase management/personal access token (those are
+account-wide). It connects as a dedicated Postgres role **`ci_user`** that is
+granted `EXECUTE` on **only** `ingest_markdown_note` — no table access, no other
+functions, not a superuser. Because the function is `SECURITY DEFINER`, it
+inserts notes on `ci_user`'s behalf without the role holding any rights on the
+`notes` table. A leaked credential can do exactly one thing: ingest a note.
+Migration `..._ci_user_scoped_grants.sql` also revokes the default
+`PUBLIC`/`anon`/`authenticated` `EXECUTE` so the public anon key can't call it.
+
+Create / rotate the role (run as an admin, e.g. via the SQL editor or MCP):
+
+```sql
+-- pick a fresh strong password
+create role ci_user with login password '<pw>' nosuperuser nocreatedb nocreaterole;
+grant usage   on schema public to ci_user;
+grant execute on function public.ingest_markdown_note(uuid,text,text,text) to ci_user;
+```
+
+Then set the secret to its pooler connection string (port 6543, transaction
+mode, TLS required):
+`postgresql://ci_user.<project_ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require`
+
 Required repo config (Settings → Secrets and variables → Actions):
 
 | Name | Kind | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | secret | API key the Claude Code Action runs with |
-| `SUPABASE_ACCESS_TOKEN` | secret | Supabase personal access token for the MCP server |
-| `SUPABASE_PROJECT_REF` | variable (optional) | defaults to `bhewgqnzhyllvxcdmjrd` |
+| `SUPABASE_CI_DATABASE_URL` | secret | pooler connection string for the scoped `ci_user` role |
 | `SUPABASE_NOTES_USER_ID` | variable (optional) | `auth.users` id that owns inserted notes |
 
-`notes.user_id` is `NOT NULL` with an `auth.users` FK and SQL run via the MCP
-server has no `auth.uid()`, so the owner id is passed explicitly (defaulting to
-the existing user).
+`notes.user_id` is `NOT NULL` with an `auth.users` FK and the definer function
+has no `auth.uid()`, so the owner id is passed explicitly (defaulting to the
+existing user).
