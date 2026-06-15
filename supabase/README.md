@@ -40,12 +40,12 @@ Vault (secret name `digitalocean-inference-model-key`).
 ## Markdown → Supabase monitor (CI)
 
 `.github/workflows/markdown-to-supabase.yml` watches pushes to `main`. When a
-markdown file is **added or changed**, the workflow runs the Claude Code GitHub
-Action and asks Claude to hand each file to the `ingest_markdown_note` function
-over `psql` — one call per file, `source_path` = file path, `content` = file
-body (bound with psql's `:'var'` so the markdown needs no escaping). Each new
-version is a plain insert, so the classify and embed triggers above fire and the
-version is categorised + embedded automatically. Deletions are ignored.
+markdown file is **added or changed**, the workflow calls the
+`ingest_markdown_note` function over `psql` — one call per file, `source_path` =
+file path, `content` = file body (bound with psql's `:'var'` so the markdown
+needs no escaping). Each new version is a plain insert, so the classify and embed
+triggers above fire and the version is categorised + embedded automatically.
+Deletions are ignored.
 
 ### Versioning (`ingest_markdown_note`)
 
@@ -94,9 +94,11 @@ Required repo config (Settings → Secrets and variables → Actions):
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | secret | API key the Claude Code Action runs with |
 | `SUPABASE_CI_DATABASE_URL` | secret | pooler connection string for the scoped `ci_user` role |
 | `SUPABASE_NOTES_USER_ID` | variable (optional) | `auth.users` id that owns inserted notes |
+
+(The classify/embed pipelines read their keys from Vault, so the workflow itself
+needs no Anthropic key.)
 
 `notes.user_id` is `NOT NULL` with an `auth.users` FK and the definer function
 has no `auth.uid()`, so the owner id is passed explicitly (defaulting to the
