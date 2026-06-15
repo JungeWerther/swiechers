@@ -36,3 +36,26 @@ Vault (secret name `digitalocean-inference-model-key`).
 > Note: these files are checked in for reference. The live project is managed
 > through the Supabase dashboard / MCP, so applying these via the Supabase CLI
 > against the same project is not required.
+
+## Markdown → Supabase monitor (CI)
+
+`.github/workflows/markdown-to-supabase.yml` watches pushes to `main`. When a
+markdown file is **added**, the workflow runs the Claude Code GitHub Action and
+asks Claude to insert each new file into the `notes` table (title = file path,
+content = file body) via the Supabase MCP server. The insert fires the classify
+and embed triggers above, so uploaded markdown is categorised and embedded
+automatically. Only newly added `.md` files are uploaded — edits and deletions
+are ignored, so existing docs aren't re-inserted.
+
+Required repo config (Settings → Secrets and variables → Actions):
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | secret | API key the Claude Code Action runs with |
+| `SUPABASE_ACCESS_TOKEN` | secret | Supabase personal access token for the MCP server |
+| `SUPABASE_PROJECT_REF` | variable (optional) | defaults to `bhewgqnzhyllvxcdmjrd` |
+| `SUPABASE_NOTES_USER_ID` | variable (optional) | `auth.users` id that owns inserted notes |
+
+`notes.user_id` is `NOT NULL` with an `auth.users` FK and SQL run via the MCP
+server has no `auth.uid()`, so the owner id is passed explicitly (defaulting to
+the existing user).

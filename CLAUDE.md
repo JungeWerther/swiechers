@@ -9,8 +9,10 @@ It was bootstrapped with `create-next-app` and uses TypeScript, Tailwind CSS,
 and shadcn/ui components. Pages include the home page plus `bio`, `projects`,
 `blog`, and `software`, with a small CMS/constants layer and a markdown renderer.
 
-There is currently **no in-repo CI/CD** (no GitHub Actions workflows, no
-`vercel.json`). If the site is deployed, it is via Vercel's dashboard Git
+The only in-repo CI is `.github/workflows/markdown-to-supabase.yml`, which on a
+push to `main` uploads newly added markdown files into the Supabase `notes`
+table via the Claude Code Action (see `supabase/README.md`). There is no
+`vercel.json`. If the site is deployed, it is via Vercel's dashboard Git
 integration (auto-deploy on push), which lives outside this repository.
 
 ## How I want agents to behave
