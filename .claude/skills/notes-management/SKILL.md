@@ -106,3 +106,39 @@ them the same way: `select decrypted_secret from vault.decrypted_secrets where n
   few seconds (pg_net is async), then check the row; inspect failures via
   `net._http_response` or the edge-function logs (`get_logs` / dashboard).
   Clean up test notes afterward.
+
+## Versioned markdown ingestion (`ingest_markdown_note`)
+
+Markdown files in the repo are ingested as notes with content-hash versioning
+(migrations `..._notes_markdown_versioning.sql` and `..._ci_user_scoped_grants.sql`).
+Three extra columns on `notes`:
+
+| Column | Notes |
+|---|---|
+| `source_path` | stable pointer to the source file (e.g. `docs/foo.md`), shared across versions; NULL for non-file notes |
+| `content_hash` | **unsalted** `sha256(content)` (matches a plain `sha256sum`); the dedupe/version key |
+| `version` | monotonic per `source_path` (1, then N+1 per distinct content) |
+
+`ingest_markdown_note(p_user_id uuid, p_source_path text, p_content text, p_title default null)`
+is `SECURITY DEFINER`: it computes the hash server-side, returns the existing row
+if that exact content already exists for the path (no-op), else **inserts the
+next version**. Append-only, so history is kept and each version is a fresh
+INSERT → classify + embed fire per version. Unique indexes on
+`(source_path, version)` and `(source_path, content_hash)` make re-pushes
+idempotent. View `notes_current` = latest version per `source_path`.
+
+## CI monitor + scoped `ci_user` role
+
+`.github/workflows/markdown-to-supabase.yml` runs on push to `main`: when a
+markdown file is added/changed it calls `ingest_markdown_note` per file over
+`psql` (one keyhole call each), which fires classify + embed via the triggers
+above. The monitor calls **no inference itself** — the DB triggers do.
+
+CI connects as a dedicated Postgres role **`ci_user`** granted `EXECUTE` on
+**only** `ingest_markdown_note` (no table access, not a superuser); the
+SECURITY DEFINER function inserts on its behalf. The default
+`PUBLIC`/`anon`/`authenticated` EXECUTE on that function is revoked, so the
+public anon key can't call it. The connection string lives in the GitHub secret
+`SUPABASE_CI_DATABASE_URL` (pooler, `sslmode=require`); rotate by recreating the
+role's password and updating the secret. See `supabase/README.md` for the exact
+SQL.
