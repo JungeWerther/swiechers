@@ -40,12 +40,31 @@ Vault (secret name `digitalocean-inference-model-key`).
 ## Markdown → Supabase monitor (CI)
 
 `.github/workflows/markdown-to-supabase.yml` watches pushes to `main`. When a
-markdown file is **added**, the workflow runs the Claude Code GitHub Action and
-asks Claude to insert each new file into the `notes` table (title = file path,
-content = file body) via the Supabase MCP server. The insert fires the classify
-and embed triggers above, so uploaded markdown is categorised and embedded
-automatically. Only newly added `.md` files are uploaded — edits and deletions
-are ignored, so existing docs aren't re-inserted.
+markdown file is **added or changed**, the workflow runs the Claude Code GitHub
+Action and asks Claude to hand each file to the `ingest_markdown_note` function
+(via the Supabase MCP server) — one call per file, `source_path` = file path,
+`content` = file body. Each new version is a plain insert, so the classify and
+embed triggers above fire and the version is categorised + embedded
+automatically. Deletions are ignored.
+
+### Versioning (`ingest_markdown_note`)
+
+Migration `..._notes_markdown_versioning.sql` adds three columns to `notes`:
+
+| Column | Purpose |
+|---|---|
+| `source_path` | stable pointer to the file (e.g. `docs/foo.md`), shared across versions |
+| `content_hash` | **unsalted** `sha256(content)` — the dedupe / version key |
+| `version` | monotonic per `source_path` (1, then N+1 per distinct content) |
+
+`ingest_markdown_note(p_user_id, p_source_path, p_content, p_title default null)`
+computes the hash server-side, returns the existing row if that exact content is
+already stored for the path (no-op), and otherwise inserts the next version. This
+is **append-only** — history is preserved, every version gets its own embedding,
+and identical re-pushes are idempotent (also backed by unique indexes on
+`(source_path, version)` and `(source_path, content_hash)`). The DB digest equals
+a plain `sha256sum` of the file, so it's portable and salt-free. View
+`notes_current` exposes the latest version per file.
 
 Required repo config (Settings → Secrets and variables → Actions):
 

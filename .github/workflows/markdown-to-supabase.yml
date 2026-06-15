@@ -1,14 +1,21 @@
 # Markdown → Supabase monitor
 #
-# Whenever a markdown file is ADDED in a push to `main`, this workflow hands the
-# new file(s) to Claude (via the Claude Code GitHub Action) and asks it to upload
-# each one into the Supabase `notes` table. Inserting a note automatically fires
-# the existing on-insert pipelines (classify → category/tags via Claude Haiku,
-# embed → embedding via DigitalOcean), so uploaded markdown is classified and
-# embedded for semantic search with no extra work here.
+# Whenever a markdown file is added or changed in a push to `main`, this workflow
+# hands the file(s) to Claude (via the Claude Code GitHub Action) and asks it to
+# upload each one into the Supabase `notes` table by calling the
+# `ingest_markdown_note(user_id, source_path, content)` function.
 #
-# Only newly *added* `.md` files are uploaded (edits and deletions are ignored),
-# so re-running or amending existing docs won't create duplicate notes.
+# That function is the whole versioning brain:
+#   - source_path (the file path) is the stable pointer to a document;
+#   - it computes an unsalted sha256 of the content as the dedupe/version key;
+#   - identical content for a path is a no-op (returns the existing row);
+#   - changed content is inserted as the next version (append-only, history kept).
+# Each new version is a plain INSERT, so the existing on-insert pipelines
+# (classify → category/tags via Claude Haiku, embed → embedding via DigitalOcean)
+# encode every version automatically — no orchestration here.
+#
+# Deletions are ignored. Edits flow through as new versions; unchanged files are
+# skipped by the hash guard, so re-runs never create duplicate notes.
 #
 # ── Required repository configuration ────────────────────────────────────────
 # Secrets (Settings → Secrets and variables → Actions → Secrets):
@@ -51,7 +58,7 @@ jobs:
           # Full history so we can diff this push against its parent.
           fetch-depth: 0
 
-      - name: Detect added markdown files
+      - name: Detect added or changed markdown files
         id: detect
         run: |
           set -euo pipefail
@@ -71,24 +78,26 @@ jobs:
             fi
           fi
 
-          added="$(git diff --name-only --diff-filter=A "$before" "${{ github.sha }}" -- '*.md' '**/*.md' || true)"
+          # Added + modified markdown. The DB function dedupes unchanged content,
+          # so re-listing a file that didn't really change is harmless.
+          changed="$(git diff --name-only --diff-filter=AM "$before" "${{ github.sha }}" -- '*.md' '**/*.md' || true)"
 
-          echo "Added markdown files:"
-          echo "${added:-<none>}"
+          echo "Added/changed markdown files:"
+          echo "${changed:-<none>}"
 
           {
             echo "files<<__EOF__"
-            echo "$added"
+            echo "$changed"
             echo "__EOF__"
           } >> "$GITHUB_OUTPUT"
 
-          if [ -n "$added" ]; then
+          if [ -n "$changed" ]; then
             echo "has_files=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_files=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload added markdown to Supabase
+      - name: Upload added/changed markdown to Supabase
         if: steps.detect.outputs.has_files == 'true'
         uses: anthropics/claude-code-action@v1
         env:
@@ -96,33 +105,38 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            New markdown files were added to the repository in this push. For EACH
-            file path listed below, read the file and upload its contents to the
-            Supabase `notes` table as exactly one new row, then stop.
+            Markdown files were added or changed in this push. For EACH file path
+            listed below, read the file and hand its contents to the Supabase
+            `notes` table by calling the `ingest_markdown_note` function once, then
+            stop.
 
             Files (one path per line):
             ${{ steps.detect.outputs.files }}
 
-            For each file, insert one note with the Supabase MCP `execute_sql`
+            For each file, run exactly this with the Supabase MCP `execute_sql`
             tool. Use dollar-quoting so the markdown body needs no escaping:
 
-              insert into public.notes (user_id, title, content)
-              values (
-                '${{ vars.SUPABASE_NOTES_USER_ID || '380bda09-6ba5-473b-a6bc-f1d4f5db71ba' }}',
-                $note_title$<FILE PATH>$note_title$,
+              select public.ingest_markdown_note(
+                '${{ vars.SUPABASE_NOTES_USER_ID || '380bda09-6ba5-473b-a6bc-f1d4f5db71ba' }}'::uuid,
+                $note_path$<FILE PATH>$note_path$,
                 $note_body$<VERBATIM FILE CONTENTS>$note_body$
               );
 
             Rules:
-            - title = the file path exactly as listed (e.g. docs/foo.md).
-            - content = the full, verbatim contents of the file.
-            - Insert one row per file; do not skip, merge, or deduplicate files.
+            - 2nd arg = the file path exactly as listed (e.g. docs/foo.md). This is
+              the stable pointer; the function keys versions off it.
+            - 3rd arg = the full, verbatim contents of the file.
+            - Call the function once per file; do not skip or merge files. The
+              function itself handles hashing, dedupe, and version numbering —
+              unchanged content is a no-op and changed content becomes a new
+              version, so you do NOT need to check for duplicates yourself.
             - If a file's body contains the dollar-quote tag, pick a different,
-              unused tag for that statement.
-            - Do NOT modify any files, create migrations, alter schema, or touch any
-              table other than `public.notes`. The classify and embed pipelines run
-              automatically on insert — do not call them yourself.
-            - After all inserts succeed, briefly report which files you uploaded.
+              unused tag for that call.
+            - Do NOT write raw INSERTs, modify files, create migrations, alter
+              schema, or touch any table directly. Only call ingest_markdown_note.
+              Classify + embed run automatically on each new version.
+            - After all calls succeed, briefly report which files became new
+              versions and which were unchanged (the function returns the row).
           claude_args: |
             --max-turns 20
             --allowedTools "Read,mcp__supabase__execute_sql"
