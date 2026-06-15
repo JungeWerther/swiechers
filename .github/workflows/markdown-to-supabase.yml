@@ -124,6 +124,10 @@ jobs:
           # so arbitrary markdown bodies need no escaping. The scoped ci_user role
           # can only EXECUTE ingest_markdown_note, which (SECURITY DEFINER) handles
           # hashing, dedupe and version numbering and fires classify + embed.
+          # NB: psql's :'var' interpolation is a client-side feature that -c does
+          # NOT process (it requires server-parsable SQL only), so the query is
+          # piped on stdin, where interpolation does run.
+          sql="select version, left(content_hash, 12) as hash from public.ingest_markdown_note(:'uid'::uuid, :'path', :'body');"
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             if [ ! -f "$f" ]; then
@@ -131,10 +135,8 @@ jobs:
               continue
             fi
             echo "ingesting: $f"
-            psql "$SUPABASE_CI_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
+            printf '%s\n' "$sql" | psql "$SUPABASE_CI_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
               -v uid="$NOTES_USER_ID" \
               -v path="$f" \
-              -v body="$(cat "$f")" \
-              -c "select version, left(content_hash, 12) as hash
-                    from public.ingest_markdown_note(:'uid'::uuid, :'path', :'body')"
+              -v body="$(cat "$f")"
           done <<< "$FILES"
