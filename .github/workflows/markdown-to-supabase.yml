@@ -1,29 +1,45 @@
 # Markdown → Supabase monitor
 #
-# Whenever a markdown file is ADDED in a push to `main`, this workflow hands the
-# new file(s) to Claude (via the Claude Code GitHub Action) and asks it to upload
-# each one into the Supabase `notes` table. Inserting a note automatically fires
-# the existing on-insert pipelines (classify → category/tags via Claude Haiku,
-# embed → embedding via DigitalOcean), so uploaded markdown is classified and
-# embedded for semantic search with no extra work here.
+# Whenever a markdown file is added or changed in a push to `main`, this workflow
+# hands the file(s) to Claude (via the Claude Code GitHub Action) and asks it to
+# upload each one into the Supabase `notes` table by calling the
+# `ingest_markdown_note(user_id, source_path, content)` function over `psql`.
 #
-# Only newly *added* `.md` files are uploaded (edits and deletions are ignored),
-# so re-running or amending existing docs won't create duplicate notes.
+# That function is the whole versioning brain:
+#   - source_path (the file path) is the stable pointer to a document;
+#   - it computes an unsalted sha256 of the content as the dedupe/version key;
+#   - identical content for a path is a no-op (returns the existing row);
+#   - changed content is inserted as the next version (append-only, history kept).
+# Each new version is a plain INSERT, so the existing on-insert pipelines
+# (classify → category/tags via Claude Haiku, embed → embedding via DigitalOcean)
+# encode every version automatically — no orchestration here.
+#
+# Deletions are ignored. Edits flow through as new versions; unchanged files are
+# skipped by the hash guard, so re-runs never create duplicate notes.
+#
+# ── Least-privilege credential ───────────────────────────────────────────────
+# CI does NOT use a Supabase management/personal access token (those are
+# account-wide). It connects as a dedicated, scoped Postgres role `ci_user` that
+# has been granted EXECUTE on ONLY `ingest_markdown_note` and nothing else — no
+# table access, no other functions, not a superuser. The function is
+# SECURITY DEFINER, so it can insert notes on ci_user's behalf without ci_user
+# holding any rights on the `notes` table. A leaked credential can do exactly one
+# thing: ingest a markdown note. Rotate it by re-running the role bootstrap and
+# updating SUPABASE_CI_DATABASE_URL.
 #
 # ── Required repository configuration ────────────────────────────────────────
 # Secrets (Settings → Secrets and variables → Actions → Secrets):
-#   ANTHROPIC_API_KEY     Anthropic API key the Claude Code Action runs with.
-#   SUPABASE_ACCESS_TOKEN Supabase personal access token for the Supabase MCP
-#                         server (create one at https://supabase.com/dashboard
-#                         → Account → Access Tokens).
+#   ANTHROPIC_API_KEY         Anthropic API key the Claude Code Action runs with.
+#   SUPABASE_CI_DATABASE_URL  Pooler connection string for the scoped `ci_user`
+#                             role, e.g. postgresql://ci_user.<ref>:<pw>@
+#                             aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
 #
 # Variables (optional — Settings → Secrets and variables → Actions → Variables):
-#   SUPABASE_PROJECT_REF      Defaults to bhewgqnzhyllvxcdmjrd (the notes project).
 #   SUPABASE_NOTES_USER_ID    auth.users id that owns the inserted notes.
 #                             Defaults to 380bda09-6ba5-473b-a6bc-f1d4f5db71ba
 #                             (notes.user_id is NOT NULL with an auth.users FK, and
-#                             SQL run via the MCP server has no auth.uid(), so the
-#                             owner must be passed explicitly).
+#                             the definer function has no auth.uid(), so the owner
+#                             must be passed explicitly).
 
 name: Markdown → Supabase
 
@@ -51,7 +67,7 @@ jobs:
           # Full history so we can diff this push against its parent.
           fetch-depth: 0
 
-      - name: Detect added markdown files
+      - name: Detect added or changed markdown files
         id: detect
         run: |
           set -euo pipefail
@@ -71,59 +87,68 @@ jobs:
             fi
           fi
 
-          added="$(git diff --name-only --diff-filter=A "$before" "${{ github.sha }}" -- '*.md' '**/*.md' || true)"
+          # Added + modified markdown. The DB function dedupes unchanged content,
+          # so re-listing a file that didn't really change is harmless.
+          changed="$(git diff --name-only --diff-filter=AM "$before" "${{ github.sha }}" -- '*.md' '**/*.md' || true)"
 
-          echo "Added markdown files:"
-          echo "${added:-<none>}"
+          echo "Added/changed markdown files:"
+          echo "${changed:-<none>}"
 
           {
             echo "files<<__EOF__"
-            echo "$added"
+            echo "$changed"
             echo "__EOF__"
           } >> "$GITHUB_OUTPUT"
 
-          if [ -n "$added" ]; then
+          if [ -n "$changed" ]; then
             echo "has_files=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_files=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload added markdown to Supabase
+      - name: Install postgresql-client
+        if: steps.detect.outputs.has_files == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Upload added/changed markdown to Supabase
         if: steps.detect.outputs.has_files == 'true'
         uses: anthropics/claude-code-action@v1
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_CI_DATABASE_URL: ${{ secrets.SUPABASE_CI_DATABASE_URL }}
+          NOTES_USER_ID: ${{ vars.SUPABASE_NOTES_USER_ID || '380bda09-6ba5-473b-a6bc-f1d4f5db71ba' }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            New markdown files were added to the repository in this push. For EACH
-            file path listed below, read the file and upload its contents to the
-            Supabase `notes` table as exactly one new row, then stop.
+            Markdown files were added or changed in this push. For EACH file path
+            listed below, read the file and upload its contents to the Supabase
+            `notes` table by calling the `ingest_markdown_note` function over psql,
+            then stop.
 
             Files (one path per line):
             ${{ steps.detect.outputs.files }}
 
-            For each file, insert one note with the Supabase MCP `execute_sql`
-            tool. Use dollar-quoting so the markdown body needs no escaping:
+            For each file path FILE, run exactly this single Bash command (psql is
+            installed and the connection string + owner id are in the environment).
+            psql's :'var' binding quotes each value safely, so the markdown body
+            needs no manual escaping:
 
-              insert into public.notes (user_id, title, content)
-              values (
-                '${{ vars.SUPABASE_NOTES_USER_ID || '380bda09-6ba5-473b-a6bc-f1d4f5db71ba' }}',
-                $note_title$<FILE PATH>$note_title$,
-                $note_body$<VERBATIM FILE CONTENTS>$note_body$
-              );
+              psql "$SUPABASE_CI_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
+                -v uid="$NOTES_USER_ID" -v path="FILE" -v body="$(cat 'FILE')" \
+                -c "select version, content_hash from public.ingest_markdown_note(:'uid'::uuid, :'path', :'body')"
 
             Rules:
-            - title = the file path exactly as listed (e.g. docs/foo.md).
-            - content = the full, verbatim contents of the file.
-            - Insert one row per file; do not skip, merge, or deduplicate files.
-            - If a file's body contains the dollar-quote tag, pick a different,
-              unused tag for that statement.
-            - Do NOT modify any files, create migrations, alter schema, or touch any
-              table other than `public.notes`. The classify and embed pipelines run
-              automatically on insert — do not call them yourself.
-            - After all inserts succeed, briefly report which files you uploaded.
+            - path = the file path exactly as listed (e.g. docs/foo.md). This is the
+              stable pointer; the function keys versions off it.
+            - body = the full, verbatim contents of the file (via cat).
+            - Run the command once per file; do not skip or merge files. The
+              function handles hashing, dedupe, and version numbering — unchanged
+              content is a no-op and changed content becomes a new version, so you
+              do NOT need to check for duplicates yourself.
+            - Do NOT modify files, run any other SQL, or call any function other
+              than ingest_markdown_note (the scoped role can't do anything else
+              anyway). Classify + embed run automatically on each new version.
+            - After all commands succeed, briefly report each file with the version
+              it resolved to (psql prints the returned version).
           claude_args: |
             --max-turns 20
-            --allowedTools "Read,mcp__supabase__execute_sql"
-            --mcp-config '{"mcpServers":{"supabase":{"command":"npx","args":["-y","@supabase/mcp-server-supabase@latest","--project-ref=${{ vars.SUPABASE_PROJECT_REF || 'bhewgqnzhyllvxcdmjrd' }}"],"env":{"SUPABASE_ACCESS_TOKEN":"${SUPABASE_ACCESS_TOKEN}"}}}}'
+            --allowedTools "Read,Bash(psql:*)"
