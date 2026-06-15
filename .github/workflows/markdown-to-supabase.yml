@@ -1,9 +1,9 @@
 # Markdown → Supabase monitor
 #
 # Whenever a markdown file is added or changed in a push to `main`, this workflow
-# hands the file(s) to Claude (via the Claude Code GitHub Action) and asks it to
-# upload each one into the Supabase `notes` table by calling the
-# `ingest_markdown_note(user_id, source_path, content)` function over `psql`.
+# uploads each one into the Supabase `notes` table by calling the
+# `ingest_markdown_note(user_id, source_path, content)` function over `psql`
+# (one keyhole call per file).
 #
 # That function is the whole versioning brain:
 #   - source_path (the file path) is the stable pointer to a document;
@@ -29,10 +29,11 @@
 #
 # ── Required repository configuration ────────────────────────────────────────
 # Secrets (Settings → Secrets and variables → Actions → Secrets):
-#   ANTHROPIC_API_KEY         Anthropic API key the Claude Code Action runs with.
 #   SUPABASE_CI_DATABASE_URL  Pooler connection string for the scoped `ci_user`
 #                             role, e.g. postgresql://ci_user.<ref>:<pw>@
 #                             aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
+# (The classify/embed pipelines read their own keys from Supabase Vault, so this
+#  workflow needs no Anthropic key.)
 #
 # Variables (optional — Settings → Secrets and variables → Actions → Variables):
 #   SUPABASE_NOTES_USER_ID    auth.users id that owns the inserted notes.
@@ -112,43 +113,28 @@ jobs:
 
       - name: Upload added/changed markdown to Supabase
         if: steps.detect.outputs.has_files == 'true'
-        uses: anthropics/claude-code-action@v1
         env:
           SUPABASE_CI_DATABASE_URL: ${{ secrets.SUPABASE_CI_DATABASE_URL }}
           NOTES_USER_ID: ${{ vars.SUPABASE_NOTES_USER_ID || '380bda09-6ba5-473b-a6bc-f1d4f5db71ba' }}
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            Markdown files were added or changed in this push. For EACH file path
-            listed below, read the file and upload its contents to the Supabase
-            `notes` table by calling the `ingest_markdown_note` function over psql,
-            then stop.
+          FILES: ${{ steps.detect.outputs.files }}
+        run: |
+          set -euo pipefail
 
-            Files (one path per line):
-            ${{ steps.detect.outputs.files }}
-
-            For each file path FILE, run exactly this single Bash command (psql is
-            installed and the connection string + owner id are in the environment).
-            psql's :'var' binding quotes each value safely, so the markdown body
-            needs no manual escaping:
-
-              psql "$SUPABASE_CI_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
-                -v uid="$NOTES_USER_ID" -v path="FILE" -v body="$(cat 'FILE')" \
-                -c "select version, content_hash from public.ingest_markdown_note(:'uid'::uuid, :'path', :'body')"
-
-            Rules:
-            - path = the file path exactly as listed (e.g. docs/foo.md). This is the
-              stable pointer; the function keys versions off it.
-            - body = the full, verbatim contents of the file (via cat).
-            - Run the command once per file; do not skip or merge files. The
-              function handles hashing, dedupe, and version numbering — unchanged
-              content is a no-op and changed content becomes a new version, so you
-              do NOT need to check for duplicates yourself.
-            - Do NOT modify files, run any other SQL, or call any function other
-              than ingest_markdown_note (the scoped role can't do anything else
-              anyway). Classify + embed run automatically on each new version.
-            - After all commands succeed, briefly report each file with the version
-              it resolved to (psql prints the returned version).
-          claude_args: |
-            --max-turns 20
-            --allowedTools "Read,Bash(psql:*)"
+          # One keyhole call per file. psql's :'var' binding quotes every value,
+          # so arbitrary markdown bodies need no escaping. The scoped ci_user role
+          # can only EXECUTE ingest_markdown_note, which (SECURITY DEFINER) handles
+          # hashing, dedupe and version numbering and fires classify + embed.
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if [ ! -f "$f" ]; then
+              echo "skip (not in tree): $f"
+              continue
+            fi
+            echo "ingesting: $f"
+            psql "$SUPABASE_CI_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
+              -v uid="$NOTES_USER_ID" \
+              -v path="$f" \
+              -v body="$(cat "$f")" \
+              -c "select version, left(content_hash, 12) as hash
+                    from public.ingest_markdown_note(:'uid'::uuid, :'path', :'body')"
+          done <<< "$FILES"
