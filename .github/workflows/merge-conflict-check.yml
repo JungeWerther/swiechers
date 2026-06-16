@@ -1,0 +1,54 @@
+# Merge conflict check
+#
+# Fails a pull request if it can't be merged cleanly into its base branch.
+# GitHub already greys out the merge button for conflicted PRs, but a workflow
+# turns that into an explicit status check that can be made a *required* check
+# via branch protection (Settings → Branches → branch protection rule for
+# `main` → "Require status checks to pass" → select "no merge conflicts").
+#
+# It re-runs on every push to an open PR (synchronize) and when the base moves,
+# so a PR that becomes conflicted after a new commit lands on main is caught.
+
+name: Merge conflict check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  no-merge-conflicts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          # Full history + the real PR head (not the auto-merge ref) so we can
+          # perform the merge ourselves and see a genuine conflict.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Try merging the base branch
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          git config user.email "ci@local"
+          git config user.name "merge-conflict-check"
+
+          git fetch --no-tags origin "$BASE"
+
+          # A dry-run merge: --no-commit so nothing is recorded, --no-ff so a
+          # real three-way merge runs even when the head is ahead. A clean merge
+          # exits 0; a conflict exits non-zero and we report it.
+          if git merge --no-commit --no-ff "origin/$BASE"; then
+            git merge --abort 2>/dev/null || true
+            echo "No merge conflicts with $BASE."
+          else
+            git merge --abort 2>/dev/null || true
+            echo "::error::This branch has merge conflicts with '$BASE'. Rebase or merge '$BASE' in and resolve them."
+            exit 1
+          fi
