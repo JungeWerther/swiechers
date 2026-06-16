@@ -1,0 +1,63 @@
+# Supabase security regression check
+#
+# Runs supabase/tests/security_definer_exposure_test.sql against the database to
+# assert the public REST API exposes no SECURITY DEFINER function and no
+# RLS-bypassing view. The test RAISEs on any violation, and psql with
+# ON_ERROR_STOP=1 turns that into a failed job.
+#
+# It runs on PRs and pushes to main, plus on a daily schedule — the database can
+# change outside this repo (dashboard / MCP edits), so the schedule catches drift
+# that a code-triggered run would miss.
+#
+# ── Required repository configuration ────────────────────────────────────────
+# Secrets (Settings → Secrets and variables → Actions → Secrets):
+#   SUPABASE_DB_URL  Postgres connection string for the project, connecting as a
+#                    role that may SET ROLE to anon (e.g. the `postgres` user):
+#                    postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
+#                    (Supabase dashboard → Project Settings → Database → Connection
+#                    string. SSL is required.)
+
+name: Supabase security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * *'   # daily, catches out-of-band drift
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-definer-exposure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run anon-exposure regression test
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          PGSSLMODE: require
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_DB_URL:-}" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not set." >&2
+            exit 1
+          fi
+
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          fi
+
+          psql "$SUPABASE_DB_URL" \
+            --set ON_ERROR_STOP=1 \
+            --no-psqlrc \
+            -f supabase/tests/security_definer_exposure_test.sql

@@ -103,3 +103,26 @@ needs no Anthropic key.)
 `notes.user_id` is `NOT NULL` with an `auth.users` FK and the definer function
 has no `auth.uid()`, so the owner id is passed explicitly (defaulting to the
 existing user).
+
+## Security regression check (CI)
+
+`.github/workflows/supabase-security.yml` runs
+`supabase/tests/security_definer_exposure_test.sql` against the database (on PRs,
+pushes to `main`, and a daily schedule). The test asserts that the public REST
+API exposes **no** `SECURITY DEFINER` function to `anon`/`authenticated` and
+**no** RLS-bypassing view (a view granted to those roles must run with
+`security_invoker = on`). It fails loudly, listing any offender.
+
+The daily schedule matters because the database can change outside this repo
+(dashboard / MCP edits), so drift is caught even with no code change.
+
+Required repo config:
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `SUPABASE_DB_URL` | secret | Postgres connection string as a role that may `SET ROLE anon` (the `postgres` user): `postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres` |
+
+The fixes that made this check pass are recorded as migrations:
+`20260615214347_fix_note_atoms_security_invoker`,
+`20260616065317_revoke_anon_security_definer_execute`, and
+`20260616065457_revoke_public_execute_security_definer`.
